@@ -45,7 +45,7 @@ public class CineProcesosService {
     // === MÉTODO PÚBLICO PRINCIPAL (Venta Directa) ===
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public BoletoDto registrarVenta(VentaDto bean) throws SQLException {
-        validarDisponibilidadAsientos(bean.getAsientosIds());
+        validarDisponibilidadAsientos(bean.getFuncionId(), bean.getAsientosIds());
 
         int usuarioId = getOrCreateUsuario(bean.getClienteNombre(), bean.getClienteApellido(), bean.getClienteTelefono());
 
@@ -86,12 +86,15 @@ public class CineProcesosService {
 
     // === MÉTODOS PRIVADOS (Helpers) ===
 
-    private void validarDisponibilidadAsientos(List<Integer> asientosIds) throws SQLException {
+    private void validarDisponibilidadAsientos(int funcionId, List<Integer> asientosIds) throws SQLException {
         String inParams = asientosIds.stream().map(id -> "?").collect(Collectors.joining(","));
         String sql = String.format("""
-            SELECT COUNT(1) FROM ASIENTO
-            WHERE AsientoID IN (%s)
-            AND Estado <> 'Disponible'""", inParams);
+                SELECT COUNT(1)
+                FROM RESERVA_ASIENTO
+                WHERE FuncionID = ?
+                AND AsientoID IN (…)
+                AND Estado = 'Ocupado'
+                """, inParams);
 
         Integer ocupados = jdbcTemplate.queryForObject(sql, Integer.class, asientosIds.toArray());
 
@@ -186,7 +189,6 @@ public class CineProcesosService {
             INSERT INTO RESERVA_ASIENTO (ReservaID, FuncionID, AsientoID, TipoEntradaID, PrecioUnitario, Estado, FechaReservaAsiento, FechaExpiracionAsiento)
             VALUES (?, ?, ?, ?, ?, 'Ocupado', SYSDATETIME(), DATEADD(MINUTE, 15, SYSDATETIME()))""";
 
-        String sqlUpdate = "UPDATE ASIENTO SET Estado = 'Ocupado' WHERE AsientoID = ?";
 
         jdbcTemplate.batchUpdate(sqlInsert, detalles, detalles.size(), (ps, d) -> {
             ps.setInt(1, reservaId);
@@ -196,9 +198,6 @@ public class CineProcesosService {
             ps.setDouble(5, d.precio);
         });
 
-        for (DetalleAsientoVenta d : detalles) {
-            jdbcTemplate.update(sqlUpdate, d.asientoId);
-        }
     }
 
     private void generarBoleto(int reservaId, double precioTotal) {

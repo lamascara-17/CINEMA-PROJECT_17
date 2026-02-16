@@ -246,11 +246,7 @@ public class ReservaCompletaService {
                 );
 
                 // Actualizar estado del asiento a "Reservado"
-                jdbcTemplate.update("""
-                    UPDATE ASIENTO
-                    SET Estado = 'Reservado'
-                    WHERE AsientoID = ?
-                """, asiento.getAsientoId());
+
             }
 
             // ========== 9. ACTUALIZAR DISPONIBILIDAD ==========
@@ -346,11 +342,11 @@ public class ReservaCompletaService {
     // ==================== RESOLVER ASIENTOS ====================
 
     private void resolverAsientos(ReservaCompletaDto bean) {
+
         StringBuilder whereClause = new StringBuilder();
         List<Object> params = new ArrayList<>();
         params.add(bean.getIdFuncion());
 
-        // Construir cláusula WHERE dinámica
         for (int i = 0; i < bean.getAsientosSeleccionados().size(); i++) {
             if (i > 0) whereClause.append(" OR ");
             whereClause.append("(A.Fila = ? AND A.Numero = ?)");
@@ -361,55 +357,45 @@ public class ReservaCompletaService {
         }
 
         String sql = String.format("""
-            SELECT 
-                A.AsientoID,
-                A.Fila,
-                A.Numero,
-                A.Estado,
-                A.Tipo,
-                A.AsientoRelacionadoID
-            FROM ASIENTO A
-            INNER JOIN FUNCION F ON A.SalaID = F.SalaID
-            WHERE F.FuncionID = ?
-              AND A.Activo = 1
-              AND (%s)
-        """, whereClause);
+        SELECT A.AsientoID, A.Fila, A.Numero, A.Tipo
+        FROM ASIENTO A
+        JOIN FUNCION F ON A.SalaID = F.SalaID
+        WHERE F.FuncionID = ?
+        AND (%s)
+        AND NOT EXISTS (
+            SELECT 1
+            FROM RESERVA_ASIENTO RA
+            WHERE RA.FuncionID = F.FuncionID
+            AND RA.AsientoID = A.AsientoID
+            AND RA.Estado IN ('Pendiente','Confirmado','Pagado')
+        )
+    """, whereClause);
 
-        List<Map<String, Object>> asientosBD = jdbcTemplate.queryForList(sql, params.toArray());
+        List<Map<String, Object>> asientosBD =
+                jdbcTemplate.queryForList(sql, params.toArray());
 
         if (asientosBD.size() != bean.getAsientosSeleccionados().size()) {
-            throw new RuntimeException("❌ Algunos asientos no existen en la sala de esta función.");
+            throw new RuntimeException("❌ Algunos asientos ya están reservados o no existen.");
         }
 
-        // Validar estado y asociar datos
-        List<String> noDisponibles = new ArrayList<>();
+        for (var asientoBD : asientosBD) {
 
-        for (int i = 0; i < asientosBD.size(); i++) {
-            var asientoBD = asientosBD.get(i);
-            var asientoDTO = bean.getAsientosSeleccionados().get(i);
+            String filaBD = (String) asientoBD.get("Fila");
+            Integer numeroBD = (Integer) asientoBD.get("Numero");
 
-            String estado = (String) asientoBD.get("Estado");
-            String ubicacion = asientoBD.get("Fila") + "" + asientoBD.get("Numero");
+            var asientoDTO = bean.getAsientosSeleccionados()
+                    .stream()
+                    .filter(a -> a.getFila().equals(filaBD) && a.getNumero().equals(numeroBD))
+                    .findFirst()
+                    .orElseThrow(() -> new RuntimeException("Asiento no encontrado en DTO"));
 
-            if (!"Disponible".equalsIgnoreCase(estado)) {
-                noDisponibles.add(ubicacion + " (" + estado + ")");
-            }
-
-            // Asociar datos del asiento
             asientoDTO.setAsientoId((Integer) asientoBD.get("AsientoID"));
             asientoDTO.setTipoAsiento((String) asientoBD.get("Tipo"));
-            asientoDTO.setEstadoAsiento(estado);
 
-            // Validar reglas de negocio
             validarReglasNegocio(asientoDTO);
         }
-
-        if (!noDisponibles.isEmpty()) {
-            throw new RuntimeException(
-                    "❌ Los siguientes asientos NO están disponibles: " + String.join(", ", noDisponibles)
-            );
-        }
     }
+
 
     private void validarReglasNegocio(ReservaCompletaDto.AsientoSeleccionado asiento) {
         // Obtener nombre del tipo de entrada
